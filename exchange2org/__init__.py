@@ -24,6 +24,7 @@ def save_import(library):
 import sys
 import os
 import re
+from bs4 import BeautifulSoup
 save_import('base64')       # itemID/entryID conversion
 save_import('argparse')     # for handling command line arguments
 save_import('time')
@@ -87,6 +88,25 @@ parser.add_argument('-q', '--quiet', dest='quiet', action='store_true',
 
 options = parser.parse_args()
 
+from io import StringIO
+from html.parser import HTMLParser
+
+class MLStripper(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.reset()
+        self.strict = False
+        self.convert_charrefs= True
+        self.text = StringIO()
+    def handle_data(self, d):
+        self.text.write(d)
+    def get_data(self):
+        return self.text.getvalue()
+
+def strip_tags(html):
+    s = MLStripper()
+    s.feed(html)
+    return s.get_data()
 
 
 def handle_logging():
@@ -155,7 +175,7 @@ class Exchange2Org(object):
         try:
             self.exchange_config = exchangelib.Configuration(exchangelib.Credentials(self.config.USERNAME, self.config.PASSWORD), server=self.config.EXCHANGE_SERVER)
             self.account = exchangelib.Account(self.config.PRIMARY_SMTP_ADDRESS, config=self.exchange_config, autodiscover=False, access_type=exchangelib.DELEGATE)
-            self.tz = exchangelib.EWSTimeZone.timezone(self.config.TIMEZONE)
+            self.tz = exchangelib.EWSTimeZone(self.config.TIMEZONE)
         except:
             logger.critical('Error occured while trying to set up connection with the exchange server "' + self.config.EXCHANGE_SERVER + '":')
             raise
@@ -206,8 +226,11 @@ class Exchange2Org(object):
         start_time = event.start.astimezone(self.tz).ewsformat()[11:16]
         end_day = event.end.astimezone(self.tz).ewsformat()[:10]
         end_time = event.end.astimezone(self.tz).ewsformat()[11:16]
-        entry_id = self.convert_itemid_from_exchange_to_entryid_for_outlook(str(event.item_id))
-        #entry_id = event.item_id  # until I found a working version for Python 3 of the function above
+        soup = BeautifulSoup(str(event.body), 'lxml')
+        body = ''
+        for x in soup:
+            if hasattr(x, 'text'):
+                body += x.text
 
         if event.is_all_day:
             assert(end_time == '00:00')
@@ -228,8 +251,7 @@ class Exchange2Org(object):
         debugtext.append('end_day:' + end_day)
         debugtext.append('end_time:' + end_time)
         debugtext.append('subject: ' + event.subject)
-        debugtext.append('item_id: ' + event.item_id)
-        debugtext.append('entry_id: ' + entry_id)
+        debugtext.append('body: ' + body)
         debugtext.append('is_all_day: ' + repr(event.is_all_day)) # =False
         if event.location:
             debugtext.append('location: ' + event.location)  #=None,
@@ -265,10 +287,10 @@ class Exchange2Org(object):
             output += ' (' + event.location + ')'
 
         if len(self.config.OUTLOOK_HYPERLINK) > 1:
-            output += ' [[outlook:' + entry_id + '][⦿]]'
+            output += ' [[outlook]'
 
         if self.config.WRITE_PROPERTIES_DRAWER:
-            output += '\n:PROPERTIES:\n:ID: ' + entry_id + '\n:END:\n'
+            output += '\n:PROPERTIES:\n:BODY: ' + body + '\n:END:\n'
         else:
             output += '\n'
 
@@ -295,10 +317,8 @@ class Exchange2Org(object):
 
             # Write Org-mode header with optional tags and category:
             if not options.dryrun:
-                outputhandle.write('# -*- mode: org; coding: utf-8; -*-\n* Calendar events of "' +
-                                   self.config.USERNAME.replace('\\', '\\\\') + '" from "' + self.config.EXCHANGE_SERVER +
-                                   '"  ·•·  Generated via ' + sys.argv[0] + ' at ' +
-                                   datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S'))
+                outputhandle.write('# -*- mode: org; coding: utf-8; -*-\n* Calendar events from Outlook' +
+                                   ', generated at ' + datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S'))
                 if len(self.config.TAGS) > 0:
                     outputhandle.write(' ' * 10 + ':' + ':'.join(self.config.TAGS) + ':')
                 if len(self.config.CATEGORY) > 0:
